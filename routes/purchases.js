@@ -87,7 +87,7 @@ router.post("/api/purchases", async (req, res) => {
 
     // Insertar compra
     const [result] = await connection.query(
-      "INSERT INTO purchases (user_id, total, status, purchase_date) VALUES (?, ?, 'COMPLETADA', NOW())",
+      "INSERT INTO purchases (user_id, total, status, purchase_date) VALUES (?, ?, 'PENDIENTE', NOW())",
       [user_id, total]
     );
     const purchaseId = result.insertId;
