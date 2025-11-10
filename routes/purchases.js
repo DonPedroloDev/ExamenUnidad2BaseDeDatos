@@ -143,17 +143,131 @@ router.post("/api/purchases", async (req, res) => {
 
 // Actualizar compra
 router.put("/api/purchases/:id", async (req, res) => {
-  const { status } = req.body;
+  const { user_id, status, details } = req.body;
+  const purchaseId = req.params.id;
+
+  const connection = await pool.getConnection();
+  await connection.beginTransaction();
+
   try {
-    const [result] = await pool.query(
-      "UPDATE purchases SET status = ? WHERE id = ?",
-      [status, req.params.id]
+    // Verificar que la compra exista
+    const [purchaseRows] = await connection.query(
+      "SELECT status FROM purchases WHERE id = ?",
+      [purchaseId]
     );
-    if (result.affectedRows === 0)
+
+    if (purchaseRows.length === 0) {
+      await connection.rollback();
       return res.status(404).json({ message: "Compra no encontrada" });
-    res.json({ message: "Compra actualizada" });
+    }
+
+    // No permitir modificar compras COMPLETADAS
+    if (purchaseRows[0].status.toUpperCase() === "COMPLETADA") {
+      await connection.rollback();
+      return res
+        .status(400)
+        .json({ message: "No se puede modificar una compra COMPLETADA" });
+    }
+
+    let total = 0;
+
+    // Si se envían detalles, validar
+    if (details && Array.isArray(details) && details.length > 0) {
+      if (details.length > 5)
+        throw new Error("No se pueden agregar más de 5 productos");
+
+      // Restaurar stock anterior
+      const [oldDetails] = await connection.query(
+        "SELECT product_id, quantity FROM purchase_details WHERE purchase_id = ?",
+        [purchaseId]
+      );
+      for (const item of oldDetails) {
+        await connection.query(
+          "UPDATE products SET stock = stock + ? WHERE id = ?",
+          [item.quantity, item.product_id]
+        );
+      }
+
+      // Eliminar detalles previos
+      await connection.query(
+        "DELETE FROM purchase_details WHERE purchase_id = ?",
+        [purchaseId]
+      );
+
+      // Validar stock y recalcular total
+      for (const item of details) {
+        const [rows] = await connection.query(
+          "SELECT stock, price FROM products WHERE id = ?",
+          [item.product_id]
+        );
+
+        if (rows.length === 0)
+          throw new Error(`Producto con id ${item.product_id} no existe`);
+
+        const product = rows[0];
+        const price = item.price ?? product.price;
+        const quantity = item.quantity;
+
+        if (product.stock < quantity)
+          throw new Error(
+            `Stock insuficiente para producto ${item.product_id}`
+          );
+
+        const subtotal = price * quantity;
+        total += subtotal;
+
+        await connection.query(
+          "INSERT INTO purchase_details (purchase_id, product_id, quantity, price, subtotal) VALUES (?, ?, ?, ?, ?)",
+          [purchaseId, item.product_id, quantity, price, subtotal]
+        );
+
+        // Descontar stock
+        await connection.query(
+          "UPDATE products SET stock = stock - ? WHERE id = ?",
+          [quantity, item.product_id]
+        );
+      }
+
+      if (total > 3500)
+        throw new Error("El total de la compra no puede exceder $3500");
+    }
+
+    // Actualizar la compra
+    const fields = [];
+    const values = [];
+
+    if (user_id) {
+      fields.push("user_id = ?");
+      values.push(user_id);
+    }
+    if (status) {
+      const validStatus = status.toUpperCase();
+      if (!["PENDIENTE", "COMPLETADA", "UPDATED"].includes(validStatus))
+        throw new Error("Estatus inválido");
+      fields.push("status = ?");
+      values.push(validStatus);
+    }
+    if (details) {
+      fields.push("total = ?");
+      values.push(total);
+    }
+
+    // Actualizar la fecha
+    fields.push("purchase_date = NOW()");
+
+    if (fields.length > 0) {
+      const sql = `UPDATE purchases SET ${fields.join(", ")} WHERE id = ?`;
+      values.push(purchaseId);
+      await connection.query(sql, values);
+    }
+
+    await connection.commit();
+    res.json({ message: "Compra actualizada correctamente" });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    await connection.rollback();
+    res.status(400).json({ error: error.message });
+  } finally {
+    connection.release();
   }
 });
 
