@@ -44,7 +44,7 @@ router.get("/api/purchases/:id", async (req, res) => {
 
 // Crear compra
 router.post("/api/purchases", async (req, res) => {
-  const { user_id, products } = req.body;
+  const { user_id, products, status } = req.body;
 
   // Validaciones iniciales
   if (!user_id || !products || !Array.isArray(products))
@@ -57,6 +57,18 @@ router.post("/api/purchases", async (req, res) => {
     return res
       .status(400)
       .json({ message: "No se pueden agregar más de 5 productos" });
+
+  // Validar status
+  let finalStatus = "COMPLETADA"; // valor por defecto
+  if (status) {
+    const validStatuses = ["PENDIENTE", "COMPLETADA"];
+    if (!validStatuses.includes(status.toUpperCase())) {
+      return res.status(400).json({
+        message: "Estatus inválido. Debe ser 'PENDIENTE' o 'COMPLETADA'",
+      });
+    }
+    finalStatus = status.toUpperCase();
+  }
 
   const connection = await pool.getConnection();
   await connection.beginTransaction();
@@ -87,8 +99,8 @@ router.post("/api/purchases", async (req, res) => {
 
     // Insertar compra
     const [result] = await connection.query(
-      "INSERT INTO purchases (user_id, total, status, purchase_date) VALUES (?, ?, 'PENDIENTE', NOW())",
-      [user_id, total]
+      "INSERT INTO purchases (user_id, total, status, purchase_date) VALUES (?, ?, ?, NOW())",
+      [user_id, total, finalStatus]
     );
     const purchaseId = result.insertId;
 
@@ -116,7 +128,11 @@ router.post("/api/purchases", async (req, res) => {
     }
 
     await connection.commit();
-    res.status(201).json({ message: "Compra creada", purchase_id: purchaseId });
+    res.status(201).json({
+      message: "Compra creada",
+      purchase_id: purchaseId,
+      status: finalStatus,
+    });
   } catch (error) {
     await connection.rollback();
     res.status(400).json({ error: error.message });
