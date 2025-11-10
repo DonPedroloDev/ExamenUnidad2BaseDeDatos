@@ -165,12 +165,21 @@ router.delete("/api/purchases/:id", async (req, res) => {
   try {
     // Verificar si existe
     const [purchase] = await connection.query(
-      "SELECT * FROM purchases WHERE id = ?",
+      "SELECT status FROM purchases WHERE id = ?",
       [req.params.id]
     );
+
     if (purchase.length === 0) {
       await connection.rollback();
       return res.status(404).json({ message: "Compra no encontrada" });
+    }
+
+    // Validar si está completada
+    if (purchase[0].status === "COMPLETADA") {
+      await connection.rollback();
+      return res.status(400).json({
+        message: "No se pueden eliminar compras con estatus COMPLETADA",
+      });
     }
 
     // Revertir stock antes de eliminar
@@ -178,6 +187,7 @@ router.delete("/api/purchases/:id", async (req, res) => {
       "SELECT product_id, quantity FROM purchase_details WHERE purchase_id = ?",
       [req.params.id]
     );
+
     for (const d of details) {
       await connection.query(
         "UPDATE products SET stock = stock + ? WHERE id = ?",
